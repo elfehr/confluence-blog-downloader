@@ -2,6 +2,7 @@
 import re
 import datetime
 import requests
+import warnings
 import unicodedata
 import pandas as pd
 from pathlib import Path
@@ -21,7 +22,7 @@ class ScraperSettings:
     server: str
     space: str = None
     start: int = 0
-    end: int = 10
+    end: int = None
     folder: str = "."
 
 class Server:
@@ -49,7 +50,7 @@ class Server:
     def _request_wrapper(self, url, **args):
         response = self.connection.get(url, **args)
         self._maybe_print(response.url)
-        assert(response.status_code == 200)
+        assert response.status_code == 200, response.status_code
         return response.json()
 
     def _scrape_list_stop(self, content):
@@ -161,7 +162,15 @@ class Blog(Server):
                 posts = df['ID'].T.to_numpy(dtype=str).tolist()
             else:
                 posts = df[0].T.to_numpy(dtype=str).tolist()
-        self._maybe_print(f"Scraping {len(posts)} posts: {posts}")
+        self._maybe_print(f"Scraping {len(posts)} posts:")
+        for post_ID in posts:
+            try:
+                int(post_ID)
+            except:
+                warnings.warn(f"Skipping post {post_ID}: not a valid ID")
+            else:
+                post = BlogPost(blog, ID=post_ID)
+                post.scrape_post()
 
 class ConfluenceObject():
     def __init__(self, parent, ID: str):
@@ -187,7 +196,7 @@ class ConfluenceObject():
         self.date = datetime.date(date.year, date.month, date.day).isoformat()
         self.body = BeautifulSoup(self.content['body']['view']['value'], 'html5lib').body
         self._clean_html()
-        self.blog._maybe_print(f"Scraped {self.title} by {self.author}")
+        self.blog._maybe_print(f"Post: {self.title} by {self.author}")
 
     def _clean_html(self):
         tags = self.body.find_all('script')
@@ -196,20 +205,60 @@ class ConfluenceObject():
         tags = self.body.find_all('span', 'latexmath-mathinline')
         for tag in tags:
             tag.unwrap()
+        tags = self.body.find_all('span', 'confluence-embedded-file-wrapper')
+        for tag in tags:
+            tag.unwrap()
         tags = self.body.find_all('span', 'MathJax_Preview')
         for tag in tags:
             tag.string = f'\({tag.string}\)'
             tag.unwrap()
 
+    def _slugify(self, value):
+        value = unicodedata.normalize('NFKC', value)
+        value = re.sub(r'[^_\w\s-]', '', value)
+        return re.sub(r'[\s]+', '_', value).strip('-_')
+
     def _scrape_comments(self):
         url = "{}/child/comment".format(self.url)
-        content = self.blog._request_wrapper(url, params={'limit': '999'})#, 'depth': 'all'})
+        content = self.blog._request_wrapper(url, params={'limit': '999'})
         depth = 0 if isinstance(self, BlogPost) else self.depth + 1
         self.comments = [Comment(self, post['id'], depth) for post in content['results']]
+
+    def _scrape_attachments(self):
+        url = "{}/child/attachment".format(self.url)
+        content = self.blog._request_wrapper(url, params={'limit': '999'})
+        for post in content['results']:
+            url = post['_links']['download']
+            for original_url in (url, url.replace('/attachments/', '/thumbnails/')):
+                remote_filename = self.blog.server + original_url
+                modified_url = self._format_attachment_filename(original_url)
+                local_filename = self.blog.folder.joinpath(modified_url)
+                if not local_filename.exists():
+                    folder = local_filename.parent
+                    if not folder.exists():
+                        self.blog._maybe_print(f"Creating {folder}")
+                        folder.mkdir(parents=True)
+                    self.blog._maybe_print(f"Downloading {local_filename}")
+                    response = self.blog.connection.get(remote_filename)
+                    with open(local_filename, 'wb') as f:
+                        f.write(response.content)
+                else:
+                    self.blog._maybe_print(f"Already exists: {local_filename}")
+
+    def _format_attachment_filename(self, url):
+        folder = Path(url.lstrip("/")).parent
+        name, details = Path(url).name.split('?')
+        version = re.search('(?<=version=)\d+', details).group(0)
+        ext = Path(name).suffixes
+        slug = self._slugify(Path(name).stem)
+        name = ''.join([slug, f'_version{version}',  *ext])
+        return folder.joinpath(name)
+
 
 class BlogPost(ConfluenceObject):
     def scrape_post(self):
         self.blog._maybe_print(f"Building post {self.title}")
+        self._scrape_attachments()
         self._scrape_comments()
         self._format_html()
         self._export_html()
@@ -240,7 +289,7 @@ class BlogPost(ConfluenceObject):
 
         # add metadata in <head>
         title_tag = soup.new_tag('title')
-        title_tag.string = post.title
+        title_tag.string = self.title
         mathjax1_tag = soup.new_tag('script', src=r'https://polyfill.io/v3/polyfill.min.js?features=es6')
         mathjax2_tag = soup.new_tag('script', src=r'https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js')
         soup.head.append(title_tag)
@@ -251,15 +300,15 @@ class BlogPost(ConfluenceObject):
         title_tag = soup.new_tag('h1')
         author_tag = soup.new_tag('address')
         id_tag = soup.new_tag('p')
-        title_tag.string = post.title
-        author_tag.string = f"By {post.author} on {post.date_formatted} (ID {post.ID})"
+        title_tag.string = self.title
+        author_tag.string = f"By {self.author} on {self.date_formatted} (ID {self.ID})"
         soup.body.append(soup.new_tag('header'))
         soup.body.header.append(title_tag)
         soup.body.header.append(author_tag)
 
         # add post content in <main>
         soup.body.append(soup.new_tag('main'))
-        soup.body.main.append(post.body)
+        soup.body.main.append(self.body)
         soup.body.main.body.unwrap()
 
         # add comments in an <article> each
@@ -269,20 +318,26 @@ class BlogPost(ConfluenceObject):
             soup.body.append(h2_tag)
             self._format_comments(self, soup)
 
+        # edit links
+        imgs = soup.find_all('img', attrs={'data-image-src': re.compile('/download/attachments/.*')})
+        for img in imgs:
+            big = Path('..').joinpath(self._format_attachment_filename(img['data-image-src']))
+            small = str(big).replace('/attachments/', '/thumbnails/')
+            new_img = soup.new_tag('img', src=small)
+            img_link = soup.new_tag('a', href=big)
+            self.blog._maybe_print(f"Replacing link to {big}")
+            img_link.append(new_img)
+            img.replace_with(img_link)
+
         soup.smooth()
         self.html = soup.prettify()
 
-    def _slugify_title(self):
-        value = unicodedata.normalize('NFKC', self.title)
-        value = re.sub(r'[^\w\s-]', '', value.lower())
-        return re.sub(r'[-\s]+', '_', value).strip('-_')
-
     def _export_html(self):
-        folder = post.blog.folder.joinpath('blog')
+        folder = self.blog.folder.joinpath('blog')
         if not folder.exists():
             self.blog._maybe_print(f"Creating {folder}")
             folder.mkdir(parents=True)
-        filename = folder.joinpath(f"{self.date}_{self._slugify_title()}.html")
+        filename = folder.joinpath(f"{self.date}_{self._slugify(self.title)}.html")
         self.blog._maybe_print(f"Writing {filename}")
         with open(filename, 'w') as f:
             f.write(self.html)
@@ -291,6 +346,7 @@ class Comment(ConfluenceObject):
     def __init__(self, parent, ID: str, depth: int):
         super().__init__(parent, ID)
         self.depth = depth
+        self._scrape_attachments()
         self._scrape_comments()
 
 
@@ -305,60 +361,29 @@ connection = requests.Session()
 connection.proxies.update(proxy)
 connection.auth = (user, password)
 
+# # set up connection to confluence
 blog = Blog(settings, connection)
 # blog.test_connection(verbose=True)
+
+# # list all blog posts
 # blog.list_posts(merge=False)
-# blog.scrape_posts(ID='167948585')
-# post = BlogPost(blog, ID='167948585')
-post = BlogPost(blog, ID='256503798')
-# post = BlogPost(blog, ID='161714611')
-post.scrape_post()
-# blog.scrape_posts(file='test')
+
+# # different ways to scrape a list of posts
+# blog.scrape_posts(ID='183140357')
+# blog.scrape_posts(file='subset.csv', header=0)
 # blog.scrape_posts(file='default')
-# blog.scrape_posts()
-# posts = blog.posts
+blog.scrape_posts()
 
+# # manually scrape a blog post
+# post = BlogPost(blog, ID='167948585')
+# post.scrape_post()
 
-#         return soup
-
-
-        # soup = BeautifulSoup(self.json['body']['view']['value'], 'html5lib')
-        # return {'content': soup.body, 'title': title,
-        #         'author': author, 'date': date}
-
-# blog.export_list()
-
-
-# r = connection.get("https://confluence.example.com/rest/api/space/MS/content/blogpost?start=0")
-
-# @pytest.fixture
-# def RequestSettings_server_only():
-#     return ScraperSettings(server=server, space=space)
-
-# @pytest.fixture
-# def RequestSettings_space():
-#     return ScraperSettings(server=server, space=space)
-
-# @pytest.fixture
-# def RequestSettings_password():
-#     return ScraperSettings(server=server, auth=(user, password))
-
-# @pytest.fixture
-# def RequestSettings_space_password():
-#     return ScraperSettings(server=server, space=space, auth=(user, password))
-
-# def test_Server_noauth(RequestSettings_server_only):
-#         server = Server(RequestSettings_server_only)
-#         assert server.test_connection()
-
-# def test_Server_space_password(RequestSettings_password):
-#         server = Server(RequestSettings_password)
-#         assert server.test_connection()
-
-# def test_Blog_noauth(RequestSettings_space):
-#         blog = Blog(RequestSettings_space)
-#         assert blog.test_connection()
-
-# def test_Blog_space_password(RequestSettings_space_password):
-#         blog = Blog(RequestSettings_space_password)
-#         assert blog.test_connection()
+# todo:
+# types of internal links:
+# https://confluence.example.com/display/MS/2018/01/30/EOS?focusedCommentId=104032991#comment-104032991
+# https://confluence.example.com/display/MS/MOS+meeting+--+21.12.02?preview=/188800496/188800502/201221.pdf
+# https://confluence.example.com/download/attachments/198900289/image2021-3-17_13-11-21.png?version=1&amp;modificationDate=1615983081145&amp;api=v2
+# https://confluence.example.com/pages/viewpage.action?pageId=148808992
+# /pages/viewpage.action?pageId=104016022"
+# /display/MS/
+# /download/attachments
