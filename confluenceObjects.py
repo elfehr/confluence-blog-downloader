@@ -1,13 +1,14 @@
-# import pytest
 import re
-import datetime
-import requests
 import warnings
+import datetime
 import unicodedata
-import pandas as pd
 from pathlib import Path
-from bs4 import BeautifulSoup
 from dataclasses import dataclass
+
+import requests
+import pandas as pd
+from bs4 import BeautifulSoup
+
 
 @dataclass
 class ScraperSettings:
@@ -25,8 +26,17 @@ class ScraperSettings:
     end: int = None
     folder: str = "."
 
+
 class Server:
-    """ Confluence server and the credentials to access it. """
+    """ Confluence server and the credentials to access it.
+    Attributes:
+        verbose (bool): whether to print debugging information
+        posts (dict): list of post IDs contained in the blog, to be written to list_blogposts.csv
+        settings (ScraperSettings): user settings to get the list of posts
+        connection (requests.sessions.Session): request session to reuse the connection to the server
+        server (src): URL of confluence server
+        url (src): URL of the API endpoint
+    """
     verbose = True
     posts = []
 
@@ -105,7 +115,9 @@ class Server:
 
     def export_list(self, merge=True):
         """ Write in a csv the scraped list of posts.
-            merge (bool): whether to merge with or replace the current file """
+        Args:
+            merge (bool): whether to merge with or replace the current file
+        """
         if len(self.posts) > 0:
             if not self.folder.exists():
                 self._maybe_print(f"Creating {self.folder}")
@@ -117,13 +129,17 @@ class Server:
                 df = pd.concat([df, pd.read_csv(filename).set_index('ID')]).drop_duplicates()
             df.to_csv(filename)
 
-class Blog(Server):
-    """ Blog of a confluence space. """
 
+class Blog(Server):
+    """ Blog of a confluence space.
+    Additional attributes:
+        folder (Path): local path to the folder where to save the blog posts
+    """
     def _format_url(self):
         api_endpoint = "{}/rest/api/space/{}/content/blogpost"
+        print(self.settings.folder)
         self.url = api_endpoint.format(self.server, self.settings.space)
-        self.folder = Path(settings.folder).expanduser().joinpath(self.settings.space)
+        self.folder = Path(self.settings.folder).expanduser().joinpath(self.settings.space)
 
     def list_posts(self, merge=True):
         """ Export a list of blog posts.
@@ -140,10 +156,11 @@ class Blog(Server):
             return content['start'] + content['limit'] >= self.settings.end
 
     def scrape_posts(self, ID=None, file='default', header=None):
-        """ Scrape the listed blog posts.
+        """ Scrape the listed blog posts and save them.
         Args:
             ID (str): post ID or list thereof
             file (str): name of a file containing a list of post IDs
+            header (int): whether the file has a header, to be passed to pandas.read_csv()
         """
         if ID is not None:
             if isinstance(ID, str):
@@ -169,10 +186,25 @@ class Blog(Server):
             except:
                 warnings.warn(f"Skipping post {post_ID}: not a valid ID")
             else:
-                post = BlogPost(blog, ID=post_ID)
+                post = BlogPost(self, ID=post_ID)
                 post.scrape_post()
 
+
 class ConfluenceObject():
+    """ Generic confluence post, either blog post or comment.
+    Attributes:
+        blog (Blog): confluence blog on which the object is posted
+        parent (ConfluenceObject): parent comment
+        comments (ConfluenceObject): list of children comments
+        ID (str): post ID of the post
+        url (str): URL of the API endpoint for the post
+        content (dict): json response of the confluenc API
+        title (str): post title
+        author (str): post author
+        date (str): post date in ISO format
+        date_formatted (str): post date in locale format
+        body (BeautifulSoup): HTML body of the post
+    """
     def __init__(self, parent, ID: str):
         if isinstance(parent, Blog):
             self.blog = parent
@@ -256,7 +288,10 @@ class ConfluenceObject():
 
 
 class BlogPost(ConfluenceObject):
+    """ Confluence blog post """
+
     def scrape_post(self):
+        """ Download attachments and save a HTML version of the post. """
         self.blog._maybe_print(f"Building post {self.title}")
         self._scrape_attachments()
         self._scrape_comments()
@@ -318,7 +353,7 @@ class BlogPost(ConfluenceObject):
             soup.body.append(h2_tag)
             self._format_comments(self, soup)
 
-        # edit links
+        # edit  <img>
         imgs = soup.find_all('img', attrs={'data-image-src': re.compile('/download/attachments/.*')})
         for img in imgs:
             big = Path('..').joinpath(self._format_attachment_filename(img['data-image-src']))
@@ -342,48 +377,11 @@ class BlogPost(ConfluenceObject):
         with open(filename, 'w') as f:
             f.write(self.html)
 
+
 class Comment(ConfluenceObject):
+    """ Confluence comment. """
     def __init__(self, parent, ID: str, depth: int):
         super().__init__(parent, ID)
         self.depth = depth
         self._scrape_attachments()
         self._scrape_comments()
-
-
-server = 'https://confluence.example.com'
-space = 'MS'
-user = 'username'
-password = '********'
-proxy = {'http': 'socks5://localhost:2280',
-         'https': 'socks5://localhost:2280'}
-settings = ScraperSettings(server=server, space=space)
-connection = requests.Session()
-connection.proxies.update(proxy)
-connection.auth = (user, password)
-
-# # set up connection to confluence
-blog = Blog(settings, connection)
-# blog.test_connection(verbose=True)
-
-# # list all blog posts
-# blog.list_posts(merge=False)
-
-# # different ways to scrape a list of posts
-# blog.scrape_posts(ID='183140357')
-# blog.scrape_posts(file='subset.csv', header=0)
-# blog.scrape_posts(file='default')
-blog.scrape_posts()
-
-# # manually scrape a blog post
-# post = BlogPost(blog, ID='167948585')
-# post.scrape_post()
-
-# todo:
-# types of internal links:
-# https://confluence.example.com/display/MS/2018/01/30/EOS?focusedCommentId=104032991#comment-104032991
-# https://confluence.example.com/display/MS/MOS+meeting+--+21.12.02?preview=/188800496/188800502/201221.pdf
-# https://confluence.example.com/download/attachments/198900289/image2021-3-17_13-11-21.png?version=1&amp;modificationDate=1615983081145&amp;api=v2
-# https://confluence.example.com/pages/viewpage.action?pageId=148808992
-# /pages/viewpage.action?pageId=104016022"
-# /display/MS/
-# /download/attachments
