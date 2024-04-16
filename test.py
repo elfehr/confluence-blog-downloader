@@ -1,5 +1,8 @@
 # import pytest
+import re
+import datetime
 import requests
+import unicodedata
 import pandas as pd
 from pathlib import Path
 from bs4 import BeautifulSoup
@@ -20,7 +23,6 @@ class ScraperSettings:
     start: int = 0
     end: int = 10
     folder: str = "."
-
 
 class Server:
     """ Confluence server and the credentials to access it. """
@@ -114,8 +116,6 @@ class Server:
                 df = pd.concat([df, pd.read_csv(filename).set_index('ID')]).drop_duplicates()
             df.to_csv(filename)
 
-
-
 class Blog(Server):
     """ Blog of a confluence space. """
 
@@ -163,7 +163,135 @@ class Blog(Server):
                 posts = df[0].T.to_numpy(dtype=str).tolist()
         self._maybe_print(f"Scraping {len(posts)} posts: {posts}")
 
+class ConfluenceObject():
+    def __init__(self, parent, ID: str):
+        if isinstance(parent, Blog):
+            self.blog = parent
+        else:
+            self.parent = parent
+            self.blog = parent.blog
+        self.ID = ID
+        self._format_url()
+        self._scrape_info()
 
+    def _format_url(self):
+        api_endpoint = "{}/rest/api/content/{}"
+        self.url = api_endpoint.format(self.blog.server, self.ID)
+
+    def _scrape_info(self):
+        self.content = self.blog._request_wrapper(self.url, params={'expand': 'body.view,history'})
+        self.title = self.content['title']
+        self.author = self.content['history']['createdBy']['displayName']
+        date = datetime.datetime.strptime(self.content['history']['createdDate'], '%Y-%m-%dT%H:%M:%S.%f%z')
+        self.date_formatted = date.strftime('%c')
+        self.date = datetime.date(date.year, date.month, date.day).isoformat()
+        self.body = BeautifulSoup(self.content['body']['view']['value'], 'html5lib').body
+        self._clean_html()
+        self.blog._maybe_print(f"Scraped {self.title} by {self.author}")
+
+    def _clean_html(self):
+        tags = self.body.find_all('script')
+        for tag in tags:
+            tag.decompose()
+        tags = self.body.find_all('span', 'latexmath-mathinline')
+        for tag in tags:
+            tag.unwrap()
+        tags = self.body.find_all('span', 'MathJax_Preview')
+        for tag in tags:
+            tag.string = f'\({tag.string}\)'
+            tag.unwrap()
+
+    def _scrape_comments(self):
+        url = "{}/child/comment".format(self.url)
+        content = self.blog._request_wrapper(url, params={'limit': '999'})#, 'depth': 'all'})
+        depth = 0 if isinstance(self, BlogPost) else self.depth + 1
+        self.comments = [Comment(self, post['id'], depth) for post in content['results']]
+
+class BlogPost(ConfluenceObject):
+    def scrape_post(self):
+        self.blog._maybe_print(f"Building post {self.title}")
+        self._scrape_comments()
+        self._format_html()
+        self._export_html()
+
+    def _format_comments(self, parent: ConfluenceObject, soup: BeautifulSoup):
+        for comment in parent.comments:
+            margin = comment.depth * 2
+            article = soup.new_tag('article', style=f'margin-left: {margin}em')
+            id_tag = soup.new_tag('a', id=f'#comment-{comment.ID}')
+            id_tag.string = f'(ID {comment.ID})'
+            author_tag = soup.new_tag('address')
+            author_tag.string = (f"By {comment.author} on {comment.date_formatted}")
+            author_tag.extend([' ', id_tag])
+            if comment.depth > 0:
+                parent_tag = soup.new_tag("a", href=f'#comment-{parent.ID}')
+                parent_tag.string = 'parent'
+                author_tag.extend([' - ', parent_tag])
+            article.append(soup.new_tag('header'))
+            article.header.append(author_tag)
+            article.append(comment.body)
+            soup.body.append(article)
+            self._format_comments(comment, soup)
+
+    def _format_html(self):
+        soup = BeautifulSoup('<html></html>', 'html5lib')
+        soup.append(soup.new_tag('head'))
+        soup.append(soup.new_tag('body'))
+
+        # add metadata in <head>
+        title_tag = soup.new_tag('title')
+        title_tag.string = post.title
+        mathjax1_tag = soup.new_tag('script', src=r'https://polyfill.io/v3/polyfill.min.js?features=es6')
+        mathjax2_tag = soup.new_tag('script', src=r'https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js')
+        soup.head.append(title_tag)
+        soup.head.append(mathjax1_tag)
+        soup.head.append(mathjax2_tag)
+
+        # add metadata in <header>
+        title_tag = soup.new_tag('h1')
+        author_tag = soup.new_tag('address')
+        id_tag = soup.new_tag('p')
+        title_tag.string = post.title
+        author_tag.string = f"By {post.author} on {post.date_formatted} (ID {post.ID})"
+        soup.body.append(soup.new_tag('header'))
+        soup.body.header.append(title_tag)
+        soup.body.header.append(author_tag)
+
+        # add post content in <main>
+        soup.body.append(soup.new_tag('main'))
+        soup.body.main.append(post.body)
+        soup.body.main.body.unwrap()
+
+        # add comments in an <article> each
+        if self.comments:
+            h2_tag = soup.new_tag('h2')
+            h2_tag.string = 'Comments'
+            soup.body.append(h2_tag)
+            self._format_comments(self, soup)
+
+        soup.smooth()
+        self.html = soup.prettify()
+
+    def _slugify_title(self):
+        value = unicodedata.normalize('NFKC', self.title)
+        value = re.sub(r'[^\w\s-]', '', value.lower())
+        return re.sub(r'[-\s]+', '_', value).strip('-_')
+
+    def _export_html(self):
+        folder = post.blog.folder.joinpath('blog')
+        if not folder.exists():
+            self.blog._maybe_print(f"Creating {folder}")
+            folder.mkdir(parents=True)
+        filename = folder.joinpath(f"{self.date}_{self._slugify_title()}.html")
+        self.blog._maybe_print(f"Writing {filename}")
+        with open(filename, 'w') as f:
+            f.write(self.html)
+
+class Comment(ConfluenceObject):
+    def __init__(self, parent, ID: str, depth: int):
+        super().__init__(parent, ID)
+        self.depth = depth
+        self._scrape_comments()
 
 
 server = 'https://confluence.example.com'
@@ -180,11 +308,23 @@ connection.auth = (user, password)
 blog = Blog(settings, connection)
 # blog.test_connection(verbose=True)
 # blog.list_posts(merge=False)
-blog.scrape_posts(ID='167948585')
+# blog.scrape_posts(ID='167948585')
+# post = BlogPost(blog, ID='167948585')
+post = BlogPost(blog, ID='256503798')
+# post = BlogPost(blog, ID='161714611')
+post.scrape_post()
 # blog.scrape_posts(file='test')
 # blog.scrape_posts(file='default')
 # blog.scrape_posts()
-posts = blog.posts
+# posts = blog.posts
+
+
+#         return soup
+
+
+        # soup = BeautifulSoup(self.json['body']['view']['value'], 'html5lib')
+        # return {'content': soup.body, 'title': title,
+        #         'author': author, 'date': date}
 
 # blog.export_list()
 
