@@ -1,0 +1,84 @@
+* What does this do?
+- Uses the confluence REST API (v1) to download the blog posts of a confluence space in HTML form, because they are not included in exports, and can only be saved one by one as pdf or word document.
+- The connection can be set up to use a proxy and log in to access a private confluence space.
+- Separates downloading a list of all blog posts and downloading the content of the posts themselves, to allow downloading some posts manually.
+- Builds an index page listing all downloaded posts.
+- Downloads: body of blog posts, comments, attachments.
+  - Paths to attached images are adjusted
+  - Thumbnails in the posts link to the original attachments
+  - LaTeX is rendered using MathJax
+  - Comments are rendered as threads
+  - Attachment names include their version number
+  - Attachments are only downloaded in there is no local file of this name
+
+* What does this not do?
+- Various forms internal links are broken:
+  - Links to other blog posts of the form:
+    - ~https://confluence.example.com/display/MS/2018/01/30/Title~
+  - Links to pages of the form:
+    - ~https://confluence.example.com/pages/viewpage.action?pageId=148808992~
+    - ~/pages/viewpage.action?pageId=104016022~
+    - ~/display/MS/Page+name~
+  - Links to attachments of the form (TODO):
+    - ~https://confluence.example.com/display/MS/Page+name?preview=/188800496/188800502/201221.pdf~
+    - ~https://confluence.example.com/download/attachments/198900289/image.png~
+    - ~/download/attachments/198900289/image.png~
+- No styling of the posts: except some margin for the comment threads, it's raw HTML.
+
+* How to use it?
+
+** Minimum example
+List then download all blog posts in a publicly accessible space:
+#+begin_src python
+from confluenceObjects import ScraperSettings, Blog
+settings = ScraperSettings(server='https://confluence.example.com/', space='MS')
+blog = Blog(settings)
+blog.list_posts()
+blog.scrape_posts()
+#+end_src
+
+A more complex example is given in ~scraper.py~. Adapt for your needs, then run ~python scraper.py~.
+
+** Defining the confluence server
+Use ~ScraperSettings~ to define the server and space to download, the local folder to download into, and the amount of blog posts to list into ~list_blogposts.csv~.
+
+Arguments:
+- server: URL of the confluence server, ex: "https://confluence.example.com"
+- space: space key of the confluence space whose blog to download, ex "KEY"
+- folder (optional): local folder where the data is to be saved. Default: the current folder
+- start (optional): index of first blog post to download (in whatever order confluence paginates them, approximately by most recent). Default: 0
+- end (optional): index of last blog post to download. Default: None
+
+** Defining a connection to the confluence server (optional)
+Open a connection with ~requests.Session()~ and set up a proxy and/or an authentication method according to [[https://docs.python-requests.org/en/latest/user/advanced/#session-objects][the python-requests documentation]].
+
+** Test the connection to the confluence server or specific blog
+Initialise a server or blog object with ~server = Server(settings)~ or ~blog = Blog(settings)~ and test that ~server.test_connection(verbose=True)~ returns True. A server attempts to access only the root server (~https://confluence.example.com/rest/api/space~), while a blog attempts to access the specific space (~https://confluence.example.com/rest/api/space/MS/content/blogpost~).
+
+Arguments for ~Server~/~Blog~:
+- settings: the ~ScraperSettings~ object
+- connection (optional): the ~requests.Session~ object
+
+** Index the blog posts
+~blog.list_posts()~ will write a list of blog posts into ~list_blogposts.csv~. It goes page by page through ~https://confluence.example.com/rest/api/space/MS/content/blogpost?start=X~, with the starting index given in the ~ScraperSettings~ object, until it reaches the last page or the given end index.
+
+Arguments:
+- merge: whether to merge the retrieved list with the current ~list_blogposts.csv~. Default: True.
+
+** Download the blog posts
+*** A single post
+Use ~BlogPost(blog, ID='167948585').scrape_post()~ to download a single post and its attachments, given its confluence ID.
+
+*** Several posts
+~blog.scrape_posts()~ will scrape all posts listed in ~list_blogposts.csv~, then rebuild ~index.html~.
+
+Arguments:
+- file (optional): the name of a file containing the post IDs, one per line. If 'default', uses ~list_blogposts.csv~. If the file has a column with the ~ID~ header, it uses it, otherwises it uses the first column.
+- header (optional): whether the given file has a column header. Default: None (except for the default file).
+- ID (optional): a single post ID as string, or a list thereof. If both ID and file are given, file is ignored.
+
+** Dependencies
+The python libraries:
+- beautifulsoup4
+- requests
+- pandas

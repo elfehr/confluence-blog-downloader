@@ -137,7 +137,6 @@ class Blog(Server):
     """
     def _format_url(self):
         api_endpoint = "{}/rest/api/space/{}/content/blogpost"
-        print(self.settings.folder)
         self.url = api_endpoint.format(self.server, self.settings.space)
         self.folder = Path(self.settings.folder).expanduser().joinpath(self.settings.space)
 
@@ -188,7 +187,65 @@ class Blog(Server):
             else:
                 post = BlogPost(self, ID=post_ID)
                 post.scrape_post()
+        self.create_index()
 
+    def create_index(self):
+        """ Create index.html listing all files in the blog subfolder """
+        url = "{}/rest/api/space/{}".format(self.server, self.settings.space)
+        try:
+            content = self._request_wrapper(url)
+            name = content['name']
+        except:
+            name = self.settings.space
+
+        soup = BeautifulSoup('<html></html>', 'html5lib')
+        soup.append(soup.new_tag('head'))
+        soup.append(soup.new_tag('body'))
+        soup.body.append(soup.new_tag('header'))
+        soup.body.append(soup.new_tag('main'))
+
+        # metadata
+        title1_tag = soup.new_tag('title')
+        title2_tag = soup.new_tag('h1')
+        title1_tag.string = name
+        title2_tag.string = name
+        soup.head.append(title1_tag)
+        soup.body.header.append(title2_tag)
+
+        # posts
+        year = None
+        month = None
+        ul_tag = soup.new_tag('ul')
+        for post in sorted(self.folder.joinpath('blog').iterdir()):
+            date = datetime.datetime.strptime(post.name[:10], '%Y-%m-%d')
+            new_year = date.strftime('%Y')
+            new_month = date.strftime('%B')
+            if new_month != month or new_year != year:
+                self._maybe_print(f"Indexing posts from {new_year}, {new_month}")
+                if len(ul_tag.contents) > 0:
+                    soup.body.main.append(ul_tag)
+                if new_year != year:
+                    year = new_year
+                    year_tag = soup.new_tag('h2')
+                    year_tag.string = new_year
+                    soup.body.main.append(year_tag)
+                month = new_month
+                month_tag = soup.new_tag('h3')
+                month_tag.string = new_month
+                soup.body.main.append(month_tag)
+                ul_tag = soup.new_tag('ul')
+            list_tag = soup.new_tag('li')
+            link_tag = soup.new_tag('a', href=post.relative_to(self.folder))
+            link_tag.string = post.name
+            self._maybe_print(post.name)
+            ul_tag.append(list_tag)
+            list_tag.append(link_tag)
+        soup.body.main.append(ul_tag)
+
+        filename = self.folder.joinpath('index.html')
+        self._maybe_print(f"Writing {filename}")
+        with open(filename, 'w') as f:
+            f.write(soup.prettify())
 
 class ConfluenceObject():
     """ Generic confluence post, either blog post or comment.
@@ -265,17 +322,20 @@ class ConfluenceObject():
                 remote_filename = self.blog.server + original_url
                 modified_url = self._format_attachment_filename(original_url)
                 local_filename = self.blog.folder.joinpath(modified_url)
-                if not local_filename.exists():
-                    folder = local_filename.parent
-                    if not folder.exists():
-                        self.blog._maybe_print(f"Creating {folder}")
-                        folder.mkdir(parents=True)
-                    self.blog._maybe_print(f"Downloading {local_filename}")
-                    response = self.blog.connection.get(remote_filename)
-                    with open(local_filename, 'wb') as f:
-                        f.write(response.content)
-                else:
-                    self.blog._maybe_print(f"Already exists: {local_filename}")
+                try:
+                    if not local_filename.exists():
+                        folder = local_filename.parent
+                        if not folder.exists():
+                            self.blog._maybe_print(f"Creating {folder}")
+                            folder.mkdir(parents=True)
+                        self.blog._maybe_print(f"Downloading {local_filename}")
+                        response = self.blog.connection.get(remote_filename)
+                        with open(local_filename, 'wb') as f:
+                            f.write(response.content)
+                    else:
+                        self.blog._maybe_print(f"Already exists: {local_filename}")
+                except OSError as e:
+                    warnings.warn(f"Skipping saving {local_filename}: error {e.errno}")
 
     def _format_attachment_filename(self, url):
         folder = Path(url.lstrip("/")).parent

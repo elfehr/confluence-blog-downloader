@@ -34,15 +34,9 @@ blog.test_connection(verbose=True)
 # blog.scrape_posts(ID=['183140357', '198900289']) # scrape listed posts
 # blog.scrape_posts(ID='183140357') # scrape single post
 
-# manually scrape a blog post
+# # manually scrape a blog post
 post = BlogPost(blog, ID='167948585')
 post.scrape_post()
+blog.create_index() # manually update the index
 
-# TODO: internal links of types:
-# https://confluence.example.com/display/MS/2018/01/30/EOS?focusedCommentId=104032991#comment-104032991
-# https://confluence.example.com/display/MS/MOS+meeting+--+21.12.02?preview=/188800496/188800502/201221.pdf
-# https://confluence.example.com/download/attachments/198900289/image2021-3-17_13-11-21.png?version=1&amp;modificationDate=1615983081145&amp;api=v2
-# https://confluence.example.com/pages/viewpage.action?pageId=148808992
-# /pages/viewpage.action?pageId=104016022"
-# /display/MS/
-# /download/attachments
+connection.close()
