@@ -1,4 +1,5 @@
 import requests
+import subprocess
 
 from confluenceObjects import ScraperSettings, Blog, BlogPost
 
@@ -10,7 +11,8 @@ settings = ScraperSettings(server=server, space=space)
 
 # connection to use to make all requests (optional)
 user = 'username'
-password = '********'
+password = subprocess.run(['pass', 'work/confluence'],
+                          stdout=subprocess.PIPE).stdout.decode('utf-8').splitlines()[0]
 proxy = {'http': 'socks5://localhost:2280',
          'https': 'socks5://localhost:2280'}
 connection = requests.Session()
