@@ -22,6 +22,7 @@ connection.auth = (user, password) # if password is needed
 # test that the blog is accessible
 blog = Blog(settings, connection)
 blog.test_connection(verbose=True)
+# blog.verbose= False # silence all operations
 
 # # index all blog posts into list_blogposts.csv
 # blog.list_posts() # append to current index

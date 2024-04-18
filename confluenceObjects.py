@@ -1,5 +1,5 @@
 import re
-import warnings
+import logging
 import datetime
 import unicodedata
 from pathlib import Path
@@ -124,10 +124,19 @@ class Server:
                 self.folder.mkdir(parents=True)
             post_type = self.posts[0]['type']
             filename = self.folder.joinpath(f'list_{post_type}s.csv')
-            df = pd.DataFrame(self.posts).set_index('ID')
+            df = pd.DataFrame(self.posts)
+            dup = df.duplicated(subset='ID').sum()
+            if dup > 0:
+                self._warn(f"The API returned {dup} duplicated posts, which means that {dup} others posts have not been indexed and will not be downloaded automatically unless their IDs have been collected before.")
             if merge and filename.exists():
-                df = pd.concat([df, pd.read_csv(filename).set_index('ID')]).drop_duplicates()
+                old = pd.read_csv(filename, dtype=str)
+                self._maybe_print(f"Merging new list of {len(df)} posts (amoung which {dup} duplicates) with previous list of {len(old)} posts.")
+                df = pd.concat([df, old]).drop_duplicates(subset='ID').set_index('ID')
+            self._maybe_print(f"Saving list of {len(df)} posts in {filename}")
             df.to_csv(filename)
+
+    def _warn(self, message):
+        logging.warn(' ' + message)
 
 
 class Blog(Server):
@@ -148,7 +157,7 @@ class Blog(Server):
         self.scrape_list(self.url, params={'start': self.settings.start}, merge=merge)
 
     def _scrape_list_stop(self, content):
-        self._maybe_print(f"Found  {content['start'] + content['size']} / {self.settings.end} pages")
+        self._maybe_print(f"Found  {content['start'] + content['size']} / {self.settings.end} pages.")
         if self.settings.end is None:
             return False
         else:
@@ -183,7 +192,7 @@ class Blog(Server):
             try:
                 int(post_ID)
             except:
-                warnings.warn(f"Skipping post {post_ID}: not a valid ID")
+                self.blog._warn(f"Skipping post {post_ID}: not a valid ID.")
             else:
                 post = BlogPost(self, ID=post_ID)
                 post.scrape_post()
@@ -221,9 +230,10 @@ class Blog(Server):
             new_year = date.strftime('%Y')
             new_month = date.strftime('%B')
             if new_month != month or new_year != year:
-                self._maybe_print(f"Indexing posts from {new_year}, {new_month}")
                 if len(ul_tag.contents) > 0:
+                    self._maybe_print(f"{len(ul_tag.contents)} posts")
                     soup.body.main.append(ul_tag)
+                self._maybe_print(f"Indexing posts from {new_year}, {new_month}")
                 if new_year != year:
                     year = new_year
                     year_tag = soup.new_tag('h2')
@@ -237,7 +247,6 @@ class Blog(Server):
             list_tag = soup.new_tag('li')
             link_tag = soup.new_tag('a', href=post.relative_to(self.folder))
             link_tag.string = post.name
-            self._maybe_print(post.name)
             ul_tag.append(list_tag)
             list_tag.append(link_tag)
         soup.body.main.append(ul_tag)
@@ -334,8 +343,8 @@ class ConfluenceObject():
                             f.write(response.content)
                     else:
                         self.blog._maybe_print(f"Already exists: {local_filename}")
-                except OSError as e:
-                    warnings.warn(f"Skipping saving {local_filename}: error {e.errno}")
+                except Exception as e:
+                    self.blog._warn(f"Skipping saving {local_filename}: {e}")
 
     def _format_attachment_filename(self, url):
         folder = Path(url.lstrip("/")).parent

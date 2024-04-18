@@ -19,6 +19,7 @@
     - ~https://confluence.example.com/pages/viewpage.action?pageId=148808992~
     - ~/pages/viewpage.action?pageId=104016022~
     - ~/display/MS/Page+name~
+    - ~/display/OTHER/Page+name~
   - Links to attachments of the form (TODO):
     - ~https://confluence.example.com/display/MS/Page+name?preview=/188800496/188800502/201221.pdf~
     - ~https://confluence.example.com/download/attachments/198900289/image.png~
@@ -46,7 +47,7 @@ Arguments:
 - server: URL of the confluence server, ex: "https://confluence.example.com"
 - space: space key of the confluence space whose blog to download, ex "KEY"
 - folder (optional): local folder where the data is to be saved. Default: the current folder
-- start (optional): index of first blog post to download (in whatever order confluence paginates them, approximately by most recent). Default: 0
+- start (optional): index of first blog post to download (in whatever order confluence paginates them, approximately by most recently accessed). Default: 0
 - end (optional): index of last blog post to download. Default: None
 
 ** Defining a connection to the confluence server (optional)
@@ -55,25 +56,27 @@ Open a connection with ~requests.Session()~ and set up a proxy and/or an authent
 ** Test the connection to the confluence server or specific blog
 Initialise a server or blog object with ~server = Server(settings)~ or ~blog = Blog(settings)~ and test that ~server.test_connection(verbose=True)~ returns True. A server attempts to access only the root server (~https://confluence.example.com/rest/api/space~), while a blog attempts to access the specific space (~https://confluence.example.com/rest/api/space/MS/content/blogpost~).
 
-Arguments for ~Server~/~Blog~:
+Arguments for ~Server~ / ~Blog~:
 - settings: the ~ScraperSettings~ object
 - connection (optional): the ~requests.Session~ object
 
 ** Index the blog posts
 ~blog.list_posts()~ will write a list of blog posts into ~list_blogposts.csv~. It goes page by page through ~https://confluence.example.com/rest/api/space/MS/content/blogpost?start=X~, with the starting index given in the ~ScraperSettings~ object, until it reaches the last page or the given end index.
 
+In my experience, the confluence API itself returns the right amount of posts, but lists some of them several times and so misses other. It seems that opening some of the posts bring them to the first page (which allows them to be picked up by the next run of ~list_posts()~) so the missing posts are most likely old ones. If duplicates posts are detected, a warning is issued. After downloading the posts, I would advice comparing ~index.html~ with the online blog to find the missing pages and collect their IDs (shown in their URL).
+
 Arguments:
-- merge: whether to merge the retrieved list with the current ~list_blogposts.csv~. Default: True.
+- merge: whether to merge the retrieved list with the current ~list_blogposts.csv~ (the comparison is made on the ID of the post). Default: True.
 
 ** Download the blog posts
 *** A single post
 Use ~BlogPost(blog, ID='167948585').scrape_post()~ to download a single post and its attachments, given its confluence ID.
 
 *** Several posts
-~blog.scrape_posts()~ will scrape all posts listed in ~list_blogposts.csv~, then rebuild ~index.html~.
+~blog.scrape_posts()~ will by default scrape all posts listed in ~list_blogposts.csv~, then rebuild ~index.html~. Pass it a list of IDs or another file to download posts whose IDs are collected manually.
 
 Arguments:
-- file (optional): the name of a file containing the post IDs, one per line. If 'default', uses ~list_blogposts.csv~. If the file has a column with the ~ID~ header, it uses it, otherwises it uses the first column.
+- file (optional): the name of a file containing the post IDs, one per line. If 'default', uses ~list_blogposts.csv~. If the file has a column with the ~ID~ header, it uses it, otherwise it uses the first column.
 - header (optional): whether the given file has a column header. Default: None (except for the default file).
 - ID (optional): a single post ID as string, or a list thereof. If both ID and file are given, file is ignored.
 
