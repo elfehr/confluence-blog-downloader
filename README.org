@@ -1,0 +1,43 @@
+* What does it do?
+- Downloads Confluence blog (no pages) in html form.
+- Uses curl to download pages and attachments via the Confluence API. (With possiblity to use an ssh tunnel.)
+- Tries its best to keep functional links between (blog) pages.
+- Tries its best to make all images within the pages link to the big version.
+- Write the comments at the bottom of each blog page.
+- Generates an index listing all pages.
+
+* How to use it?
+- Works on Linux (tested Ubuntu/Manjaro), might or might not work on Mac (issues with sed)
+
+- Change the variables at the beginning of confluence_blog_dl.sh:
+  - server: url of confluence server (probably https://confluence.example.com)
+  - space: key of the space
+    For example, MS in https://confluence.example.com/display/MS/Magneto-Optic+Switching or in https://confluence.example.com/pages/viewrecentblogposts.action?key=MS.
+  - howmanypages: maximum number of pages to download (it will stop earlier if there are no more pages). It's supposed to start with the most recently created pages but somehow doesn't always — the idea is to only update recent pages so the script runs faster.
+  - location: where on the local computer to save the blog (will create a subfolder $space)
+  - passwordfile: location of the password-file file. The $here variable finds the current location of the script, so the default value is that both files are in the same folder.
+  - ssh: whether you need to create an ssh tunnel to access confluence (at desy since  3 Sep 2021). Use 1 for yes, 0 or anything else for no.
+  - sshserver: url of the server to connect to (probably bastion.example.com). Uses the same username as for confluence.
+
+- Change the credentials in password-file:
+  - machine: same url of confluence server, without https:// (confluence.example.com)
+  - login DESY username
+  - password: DESY password
+
+- If curl can't login to Confluence, the output will stop at page 0 without giving it a title and finding its ID:
+  #+begin_quote
+  Downloading page 0.
+  Renaming 0.html as .html.
+  Page 0 has ID .
+  #+end_quote
+  If it hangs indefinitely at "  Downloading page 0.", it probably can't access the confluence website at all. Maybe you need the ssh tunnel?
+
+* Caveats
+- Very dirty html, my bad for parsing xml and html in bash.
+- When relaunching the script, it re-downloads the blog page and comments but doesn't update the attachments: if they changed, they need to be deleted first.
+
+* Python version
+connect to space:
+        MS = Space(server, space, pages_at_once=1)
+        MS.authenticate(user, password)
+        MS.test_connection()
